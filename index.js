@@ -17,7 +17,7 @@ var store = require('store')
 store.set("history", {})
 io.on("connection", function(socket){
     console.log("co nguoi ket noi " + socket.id);
-    
+    console.log("test")
     socket.on("create or join", room => {
         console.log("create or join to room", room);
         const myRoom = io.sockets.adapter.rooms[room] || {length: 0}
@@ -28,7 +28,7 @@ io.on("connection", function(socket){
         if(numClients == 0){
             socket.join(room)
             socket.emit("created", room)
-        }else if(numClients == 1){
+        }else if(numClients !== 0){
             
             socket.join(room)
             socket.emit("joined", room)
@@ -40,9 +40,10 @@ io.on("connection", function(socket){
     })
 
     socket.on("ready", room => {
-        
         console.log("đã readly");
-        socket.broadcast.to(room).emit("ready")
+        socket.broadcast.to(room).emit("ready", {
+          guestId: socket.id
+        })
      
     })
 
@@ -61,6 +62,33 @@ io.on("connection", function(socket){
     socket.on("answer", event => {
        
         socket.broadcast.to(event.room).emit("answer", event.sdp)
+    })
+
+    socket.on("client-send-desc", (data) => {
+      const {roomID, desc} =  data
+      console.log("haha", data);
+      socket.to(roomID).emit("request-rtc-connect", {
+        guestId: socket.id,
+        desc,
+        roomID
+      })
+    })
+
+    socket.on("client-send-back-desc", (data) => {
+      const {roomId, desc} = data;
+      socket.to(roomId).emit("request-update-rtc-connect", {
+        guestId: socket.id,
+        desc,
+        roomId
+      })
+    })
+
+    socket.on("client-send-icecandidate", (data) => {
+      const { icecandidate } = data;
+      socket.to(data.guestId).emit("send-icecandidate", {
+        guestId: socket.id,
+        icecandidate
+      })
     })
     // socket.on("offer", function(description){
     //    // console.log(data);

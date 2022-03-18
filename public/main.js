@@ -1,4 +1,4 @@
-var socket = io("https://tsm-chat-app.herokuapp.com/")
+var socket = io("http://localhost:3000/")
 var constraints = { audio: true, video: true }; 
 let localVideo = document.getElementById("localVideo")
 let remoteVideo = document.getElementById("remoteVideo")
@@ -11,6 +11,7 @@ const iceSevers = {
     ]
 }
 let localStream, remoteStream, roomNumber, rtcPeerConnection, isCaller
+let roomConnectionVar = [];
 $("#goRoom").click(function(){
     if($("#roomNumber").val() === ''){
         alert("Please type a room name")
@@ -36,6 +37,10 @@ socket.on("created", room =>{
     })
 })
 
+socket.on("full", (data) => {
+  console.log("da full", data);
+})
+
 socket.on("joined", room =>{
     console.log("joined");
     navigator.mediaDevices.getUserMedia(constraints)
@@ -48,92 +53,259 @@ socket.on("joined", room =>{
         console.log("Lỗi", err);
     })
 })
+const sendLocalDesc = (guestId, desc, roomID) => {
+  socket.emit("client-send-desc", {
+    guestId,
+    desc,
+    roomID
+  });
+};
 
-socket.on("ready", () => {
-    console.log("on readly");
-   
-    if(isCaller){
-        rtcPeerConnection = new RTCPeerConnection(iceSevers)
-        rtcPeerConnection.onicecandidate = onIceCandidate
-        rtcPeerConnection.ontrack = onAddStream
-        rtcPeerConnection.addTrack(localStream.getTracks()[0], localStream)
-        rtcPeerConnection.addTrack(localStream.getTracks()[1], localStream)
-        rtcPeerConnection.createOffer()
-            .then(sessionDescription =>{
-                console.log("gửi đi offer",sessionDescription );
-                rtcPeerConnection.setLocalDescription(sessionDescription)
-                socket.emit("offer", {
-                    type: "offer",
-                    sdp: sessionDescription,
-                    room: roomNumber
-                    })
-            })
-            .catch(err =>{
-                console.log(err);
-            })
+const sendBackLocalDesc = (roomId, desc) => {
+  socket.emit("client-send-back-desc", { roomId, desc });
+};
+
+const sendIceCandidate = (guestId, icecandidate) => {
+  socket.emit("client-send-icecandidate", {
+    guestId,
+    icecandidate
+  })
+}
+//nguoi 1 goi
+socket.on("ready", (data) => {
+  console.log("bat dau call", localStream)
+  if (isCaller) {
+    //khoi tao peerConnection
+    const { guestId } = data;
+    const rtcConnect = new RTCPeerConnection(iceSevers)
+    let localDescriptionOffer;
+    if (localStream?.id) {
+      rtcConnect.addTrack(
+        localStream.getVideoTracks()[0],
+        localStream
+      );
+      rtcConnect.addTrack(
+        localStream.getAudioTracks()[0],
+        localStream
+      );
     }
-})
+    rtcConnect.createOffer()
+      .then((desc) => {
+        console.log("Nguoi 1 khoi tao ket noi & set localDescription");
+        rtcConnect.setLocalDescription(new RTCSessionDescription(desc));
+        localDescriptionOffer = desc;
+      })
+      .then(() => {
+        console.log("Nguoi 1 gui thong tin ket noi cho nguoi 2");
+        sendLocalDesc(socket.id, localDescriptionOffer, roomNumber);
+      })
+      .catch((error) => {
+        console.log("client-err", error);
+      });
+    
+    rtcConnect.onicecandidate = (event) => {
+      const { candidate } = event;
+      if (
+        candidate &&
+        candidate.candidate &&
+        candidate.candidate.length > 0
+      ) {
+        console.log("Nguoi 1 gui ICE ", event.candidate);
+        sendIceCandidate(guestId, event.candidate);
+      }
+    };
 
-socket.on('offer', (event) => {
-    console.log("Nhận được offer");
-    if(!isCaller){
-        rtcPeerConnection = new RTCPeerConnection(iceSevers)
-        console.log(rtcPeerConnection);
-        rtcPeerConnection.onicecandidate = onIceCandidate
-        rtcPeerConnection.ontrack = onAddStream
-        rtcPeerConnection.addTrack(localStream.getTracks()[0], localStream)
-        rtcPeerConnection.addTrack(localStream.getTracks()[1], localStream)
-        console.log("Nhận được",event );
-        rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(event))
-        rtcPeerConnection.createAnswer()
-            .then(sessionDescription =>{
-                console.log("gửi đi answer",sessionDescription );
-                rtcPeerConnection.setLocalDescription(sessionDescription)
-                socket.emit("answer", {
-                    type: "answer",
-                    sdp: sessionDescription,
-                    room: roomNumber
-                    })
-            })
-            .catch(err =>{
-                console.log(err);
-            })
+    rtcConnect.ontrack = (event) => {
+      try {
+        const stream = event.streams[0];
+        remoteVideo.srcObject = stream;
+      } catch (error) {
+        console.log("err", error);
+      }
     }
-})
+    const newRoomConnectionsVar = [
+      ...roomConnectionVar,
+      {
+        guestId,
+        rtcConnect
+      },
+    ];
+    roomConnectionVar = newRoomConnectionsVar;
+  }
+});
 
-socket.on("answer", event =>{
-    console.log("Nhận được answer", event);
-    rtcPeerConnection.setRemoteDescription( new RTCSessionDescription(event))
-})
+socket.on("request-update-rtc-connect", (data) => {
+  const remoteConnect = roomConnectionVar.find((con) => {
+    return con.guestId === data.guestId
+  })
+  remoteConnect.rtcConnect.setRemoteDescription(
+    new RTCSessionDescription(data.desc)
+  );
+});
 
-socket.on("candidate", event => {
-    console.log("Nhận được candidate");
-    const candidate = new RTCIceCandidate({
-        sdpMLineIndex: event.lablel,
-        candidate: event.candidate
+socket.on("send-icecandidate", (data) => {
+  console.log("send-icecandidate");
+  const remoteConnect = roomConnectionVar.find((con) => {
+    return con.guestId === data.guestId;
+  });
+  if (
+    remoteConnect &&
+    data.icecandidate &&
+    remoteConnect.rtcConnect.remoteDescription
+  ) {
+    console.log("Nhan duoc ICE tu nguoi khac & them vao ket noi peer ");
+    remoteConnect.rtcConnect.addIceCandidate(data.icecandidate);
+  }
+});
+
+// nguoi 2 tra loi
+socket.on("request-rtc-connect", (data) => {
+  console.log("Nguoi 2 nhan data nguoi 1 ", data);
+  const { guestId } = data;
+  //khoi tao peer connection
+  const rtcConnect = new RTCPeerConnection(iceSevers)
+  if (localStream?.id) {
+    rtcConnect.addTrack(
+      localStream.getVideoTracks()[0],
+      localStream
+    );
+    rtcConnect.addTrack(
+      localStream.getAudioTracks()[0],
+      localStream
+    );
+  }
+  //set remoteInfo
+  rtcConnect.setRemoteDescription(new RTCSessionDescription(data.desc));
+  //tao cau tra loi
+  let localDescriptionAnswer;
+  rtcConnect.createAnswer()
+    .then((desc) => {
+      console.log("Nguoi 2 tao cau tra loi");
+      rtcConnect.setLocalDescription(new RTCSessionDescription(desc));
+      localDescriptionAnswer = desc;
     })
-    console.log("Nhận được candidate", candidate);
-    rtcPeerConnection.addIceCandidate(candidate)
-})
+    .then(() => {
+      console.log("Nguoi 2 gui cau tra loi va thong tin ket noi");
+      sendBackLocalDesc(roomNumber, localDescriptionAnswer)
+    })
+    .catch((err) => {
+      console.log("err", err);
+    });
 
-function onAddStream(event){
-
-    remoteVideo.srcObject = event.streams[0]
-    remoteStream =  event.streams[0]
-}
-
-function onIceCandidate(event) {
-    if(event.candidate) {
-        console.log("send ice candidate: ", event.candidate);
-        socket.emit("candidate", {
-            type: "candidate",
-            lablel: event.candidate.sdpMLineIndex,
-            id: event.candidate.sdpMid,
-            candidate: event.candidate.candidate,
-            room: roomNumber
-        })
+  rtcConnect.onicecandidate = (event) => {
+    const { candidate } = event;
+    if (
+      candidate &&
+      candidate.candidate &&
+      candidate.candidate.length > 0
+    ) {
+      console.log("Nguoi 2 gui ICE", event.candidate);
+      sendIceCandidate(guestId, event.candidate);
     }
-}
+  };
+  
+  rtcConnect.ontrack = (event) => {
+    try {
+      const stream = event.streams[0];
+      remoteVideo.srcObject = stream;
+    } catch (error) {
+      console.log("err", error);
+    }
+  }
+    const newRoomConnectionsVar = [
+      ...roomConnectionVar,
+      {
+        guestId,
+        rtcConnect
+      },
+    ];
+    roomConnectionVar = newRoomConnectionsVar;
+})
+// socket.on("ready", () => {
+//     console.log("on readly");
+   
+//     if(isCaller){
+//         rtcPeerConnection = new RTCPeerConnection(iceSevers)
+//         rtcPeerConnection.onicecandidate = onIceCandidate
+//         rtcPeerConnection.ontrack = onAddStream
+//         rtcPeerConnection.addTrack(localStream.getTracks()[0], localStream)
+//         rtcPeerConnection.addTrack(localStream.getTracks()[1], localStream)
+//         rtcPeerConnection.createOffer()
+//             .then(sessionDescription =>{
+//                 console.log("gửi đi offer",sessionDescription );
+//                 rtcPeerConnection.setLocalDescription(sessionDescription)
+//                 socket.emit("offer", {
+//                     type: "offer",
+//                     sdp: sessionDescription,
+//                     room: roomNumber
+//                     })
+//             })
+//             .catch(err =>{
+//                 console.log(err);
+//             })
+//     }
+// })
+
+// socket.on('offer', (event) => {
+//     console.log("Nhận được offer");
+//     if(!isCaller){
+//         rtcPeerConnection = new RTCPeerConnection(iceSevers)
+//         console.log(rtcPeerConnection);
+//         rtcPeerConnection.onicecandidate = onIceCandidate
+//         rtcPeerConnection.ontrack = onAddStream
+//         rtcPeerConnection.addTrack(localStream.getTracks()[0], localStream)
+//         rtcPeerConnection.addTrack(localStream.getTracks()[1], localStream)
+//         console.log("Nhận được",event );
+//         rtcPeerConnection.setRemoteDescription(new RTCSessionDescription(event))
+//         rtcPeerConnection.createAnswer()
+//             .then(sessionDescription =>{
+//                 console.log("gửi đi answer",sessionDescription );
+//                 rtcPeerConnection.setLocalDescription(sessionDescription)
+//                 socket.emit("answer", {
+//                     type: "answer",
+//                     sdp: sessionDescription,
+//                     room: roomNumber
+//                     })
+//             })
+//             .catch(err =>{
+//                 console.log(err);
+//             })
+//     }
+// })
+
+// socket.on("answer", event =>{
+//     console.log("Nhận được answer", event);
+//     rtcPeerConnection.setRemoteDescription( new RTCSessionDescription(event))
+// })
+
+// socket.on("candidate", event => {
+//     console.log("Nhận được candidate");
+//     const candidate = new RTCIceCandidate({
+//         sdpMLineIndex: event.lablel,
+//         candidate: event.candidate
+//     })
+//     console.log("Nhận được candidate", candidate);
+//     rtcPeerConnection.addIceCandidate(candidate)
+// })
+
+// function onAddStream(event){
+
+//     remoteVideo.srcObject = event.streams[0]
+//     remoteStream =  event.streams[0]
+// }
+
+// function onIceCandidate(event) {
+//     if(event.candidate) {
+//         console.log("send ice candidate: ", event.candidate);
+//         socket.emit("candidate", {
+//             type: "candidate",
+//             lablel: event.candidate.sdpMLineIndex,
+//             id: event.candidate.sdpMid,
+//             candidate: event.candidate.candidate,
+//             room: roomNumber
+//         })
+//     }
+// }
 // socket.on("answer", (description) => {
 //     const pc =  new RTCPeerConnection()
 //     pc.ontrack = (event) => remoteStream = event.stream
